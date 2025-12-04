@@ -4,7 +4,7 @@ on:
 
 jobs:
   build:
-    name:
+    name: Build Kernel
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
 
@@ -13,18 +13,13 @@ jobs:
 
     - name: 环境变量配置
       run: |
-        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_IMAGE_NAME= >> $GITHUB_ENV
-        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
-        cat config.env | grep SWITCH_PYTHON= >> $GITHUB_ENV
-        cat config.env | grep NEED_DTBO= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
-        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+        if [ ! -f config.env ]; then
+          echo "Error: config.env 文件不存在！"
+          exit 1
+        fi
+        grep -E '^[A-Z_]+=' config.env | while read -r line; do
+          echo "$line" >> $GITHUB_ENV
+        done
 
     - name: 构建编译内核环境
       run: |
@@ -43,13 +38,13 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir clang-aosp
         git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android13-release clang-aosp
-
+        # 验证clang版本
+        $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r450784d/bin/clang --version | head -1
 
     - name: 下载内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
-
 
     - name: 开启lxc和docker配置
       if: env.ENABLE_LXC_DOCKER == 'true'
@@ -99,7 +94,7 @@ jobs:
         export KBUILD_BUILD_HOST=17
         export KBUILD_BUILD_USER=HyperPower
         make -s -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
-        if [ ${{env.LLVM_CONFIG}}=y ]; then
+        if [ "$LLVM_CONFIG" = "y" ]; then
         make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-" LLVM=1 LLVM_IAS=1
         else
         make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
@@ -111,17 +106,19 @@ jobs:
         git clone https://github.com/osm0sis/AnyKernel3
         cd AnyKernel3
         git checkout 458caeda335554c58930bf6dbfa23e829911e338
-        cd ../
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=/dev/block/bootdevice/by-name/boot;!g' AnyKernel3/anykernel.sh
-        sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
-        cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
-        rm -rf AnyKernel3/.git* AnyKernel3/README.md
-        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
-
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=/dev/block/bootdevice/by-name/boot;!g' anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=0;/g' anykernel.sh
+        cp ../android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ./
+        rm -rf .git* README.md ramdisk modules patch
+        # 生成zip包
+        zip -r9 ${{ env.KERNEL_ZIP_NAME }} ./* -x .git* README.md
+        mv ${{ env.KERNEL_ZIP_NAME }} ../
 
     - name: 打包并上传
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.KERNEL_ZIP_NAME }}
-        path: kernel_workspace/AnyKernel3/*
+        path: ${{ github.workspace }}/kernel_workspace/${{ env.KERNEL_ZIP_NAME }}
+        if-no-files-found: warn
+        retention-days: 7
